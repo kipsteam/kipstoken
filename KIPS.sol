@@ -724,15 +724,17 @@ contract KIPSToken is Context, IBEP20, Ownable {
         inSwapAndLiquify = false;
     }
 
-    constructor (address tokenOwner, address charity) payable   {
+    constructor (address tokenOwner, address charity, address router) payable   {
         origFees = _fees;
         CharityAddress = charity;
         //exclude owner and this contract from fee
-        _isExcludedFromFee[owner()] = true;
-        _isExcludedFromFee[address(this)] = true;
 		_owner = tokenOwner;
         _rOwned[tokenOwner] = _rTotal;
-        //payable(service).transfer(msg.value);
+        _isExcludedFromFee[owner()] = true;
+        _isExcludedFromFee[address(this)] = true;
+        IUniswapV2Router02 _newPancakeRouter = IUniswapV2Router02(router);
+        uniswapV2Pair = IUniswapV2Factory(_newPancakeRouter.factory()).createPair(address(this), _newPancakeRouter.WETH());
+        uniswapV2Router = _newPancakeRouter;
         emit Transfer(address(0),tokenOwner, _tTotal);
     }
 
@@ -846,6 +848,10 @@ contract KIPSToken is Context, IBEP20, Ownable {
         _isExcluded[account] = true;
         _excluded.push(account);
     }
+    
+    function setIsExcludedFromFee(address account, bool state) external onlyOwner() {
+        _isExcludedFromFee[account] = state;
+    }
 
     function includeAccount(address account) external onlyOwner() {
         require(_isExcluded[account], "Account is already included");
@@ -862,14 +868,6 @@ contract KIPSToken is Context, IBEP20, Ownable {
 
     function setAsCharityAccount(address account) external onlyOwner() {
 		CharityAddress = account;
-    }
-    
-    //New Pancakeswap router version?
-    //No problem, just change it!
-    function setRouterAddress(address newRouter) public onlyOwner() {
-        IUniswapV2Router02 _newPancakeRouter = IUniswapV2Router02(newRouter);
-        uniswapV2Pair = IUniswapV2Factory(_newPancakeRouter.factory()).createPair(address(this), _newPancakeRouter.WETH());
-        uniswapV2Router = _newPancakeRouter;
     }
 	
 	function updateFee(uint256 _retribFee,uint256 _burnFee,uint256 _charityFee, uint256 _liquidityFee) onlyOwner() public{
