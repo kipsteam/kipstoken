@@ -1,4 +1,8 @@
 /**
+ *Submitted for verification at BscScan.com on 2021-09-14
+*/
+
+/**
  *Submitted for verification at BscScan.com on 2021-06-11
 */
 
@@ -660,14 +664,16 @@ interface IUniswapV2Router02 is IUniswapV2Router01 {
 contract KIPSToken is Context, IBEP20, Ownable {
     using SafeMath for uint256;
     using Address for address;
-
+    enum ExcludedFromFee {TOEXCLUDED, FROMEXCLUDED, BOTHEXCLUDED, STANDARD}
+    enum WheelEvent {BURN, RETRIBUTE, CHARITY}
     event Burn(address account, uint256 amount);
-    
+
     struct Fee { 
         uint256 liquidity;
         uint256 retrib;
         uint256 burn;
         uint256 charity;
+        uint256 eventWheel;
    }
 
     mapping (address => uint256) private _rOwned;
@@ -678,6 +684,12 @@ contract KIPSToken is Context, IBEP20, Ownable {
 
     mapping (address => bool) private _isExcluded;
     address[] private _excluded;
+    uint256 public _currentLevel = 0;
+    uint256[] public _levelsAmount;
+    WheelEvent[] public _events;
+    uint256 public _tOwnedWheel;
+    bool public isEventWheelActive = true;
+    
     
     string  private _NAME = "KIPS";
     string  private _SYMBOL = "KIPS";
@@ -691,12 +703,13 @@ contract KIPSToken is Context, IBEP20, Ownable {
     uint256 private _tTotal = 1000000000 * 10**6 * 10**8;
     uint256 private _rTotal = (_MAX - (_MAX % _tTotal));
     
-    uint256 private _tFeeTotal;
+    uint256 private _tFeeRetrib;
     uint256 private _tBurnTotal;
     uint256 private _tCharityTotal;
     uint256 private _tLiquidityTotal;
+    uint256 private _tEventWheelTotal;
     
-    Fee     public  _fees = Fee(300, 400, 100, 200);
+    Fee     public  _fees = Fee(0, 0, 0, 0, 0);
     // Track original fees to bypass fees for charity account
     Fee     private origFees;
 
@@ -732,12 +745,13 @@ contract KIPSToken is Context, IBEP20, Ownable {
         _rOwned[tokenOwner] = _rTotal;
         _isExcludedFromFee[owner()] = true;
         _isExcludedFromFee[address(this)] = true;
+        _currentLevel = 0;
         IUniswapV2Router02 _newPancakeRouter = IUniswapV2Router02(router);
         uniswapV2Pair = IUniswapV2Factory(_newPancakeRouter.factory()).createPair(address(this), _newPancakeRouter.WETH());
         uniswapV2Router = _newPancakeRouter;
         emit Transfer(address(0),tokenOwner, _tTotal);
     }
-
+    
     function name() public view returns (string memory) {
         return _NAME;
     }
@@ -793,13 +807,13 @@ contract KIPSToken is Context, IBEP20, Ownable {
         return _isExcluded[account];
     }
     
-    function burn(uint256 amount) public virtual returns (bool) {
+     function burn(uint256 amount) public virtual returns (bool) {
         _burn(_msgSender(), amount);
         return true;
     }
 
-    function totalFees() public view returns (uint256) {
-        return _tFeeTotal;
+    function totalRetribution() public view returns (uint256) {
+        return _tFeeRetrib;
     }
     
     function totalBurn() public view returns (uint256) {
@@ -813,6 +827,10 @@ contract KIPSToken is Context, IBEP20, Ownable {
     function totalLiquidity() public view returns (uint256) {
         return _tLiquidityTotal;
     }
+    
+    function totalEventWheel() public view returns (uint256) {
+        return _tEventWheelTotal;
+    }
 
     function deliver(uint256 tAmount) public {
         address sender = _msgSender();
@@ -820,7 +838,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
         (uint256 rAmount,,,,) = _getValues(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rTotal = _rTotal.sub(rAmount);
-        _tFeeTotal = _tFeeTotal.add(tAmount);
+        _tFeeRetrib = _tFeeRetrib.add(tAmount);
     }
 
     function reflectionFromToken(uint256 tAmount, bool deductTransferFee) public view returns(uint256) {
@@ -866,21 +884,30 @@ contract KIPSToken is Context, IBEP20, Ownable {
         }
     }
 
-    function setAsCharityAccount(address account) external onlyOwner() {
-		CharityAddress = account;
+    function setAddressCharity(address charity) external onlyOwner() {
+        require(charity != _owner, "Charity address can't be owner address");
+        require(charity != address(0), "Can't set charity address to address(0)");
+        CharityAddress = charity;
     }
 	
-	function updateFee(uint256 _retribFee,uint256 _burnFee,uint256 _charityFee, uint256 _liquidityFee) onlyOwner() public{
-		require(_retribFee < 100 && _burnFee < 100 && _charityFee < 100 && _liquidityFee < 100);
+	function updateFee(uint256 _retribFee,uint256 _burnFee,uint256 _charityFee, uint256 _liquidityFee, uint256 _eventWheel) onlyOwner() public{
+		require(_retribFee < 100 && _burnFee < 100 && _charityFee < 100 && _liquidityFee < 100 && _eventWheel < 100);
         _fees.burn = _burnFee * 100;
 		_fees.charity = _charityFee* 100;
 		_fees.liquidity = _liquidityFee* 100;
         _fees.retrib = _retribFee* 100; 
+        _fees.eventWheel = _eventWheel*100;
         
         origFees = _fees;
 	}
 
-    
+	function setEventWheel(uint256[] memory levelAmounts, WheelEvent[] memory events) external onlyOwner {
+	    require(!isEventWheelActive, "Can't set wheel when wheel already active");
+	    _levelsAmount = levelAmounts;
+	    _events = events;
+	    _currentLevel = 0;
+	    isEventWheelActive = true;
+	}
 	
     function _approve(address owner, address spender, uint256 amount) private {
         require(owner != address(0), "TOKEN20: approve from the zero address");
@@ -903,7 +930,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
         // tokens that we need to initiate a swap + liquidity lock?
         // also, don't get caught in a circular liquidity event.
         // also, don't swap & liquify if sender is uniswap pair.
-        uint256 contractTokenBalance = balanceOf(address(this));
+        uint256 contractTokenBalance = balanceOf(address(this)).sub(_tOwnedWheel);
         
         if(contractTokenBalance >= _maxTxAmount)
         {
@@ -934,66 +961,45 @@ contract KIPSToken is Context, IBEP20, Ownable {
         _tokenTransfer(sender,recipient,amount,takeFee);
     }
 
-    function _transferStandard(address sender, address recipient, uint256 tAmount) private {
+    function _transferAction(address sender, address recipient, uint256 tAmount, ExcludedFromFee excludedFromFee) private {
         uint256 currentRate =  _getRate();
         (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, Fee memory tFees) = _getValues(tAmount);
         uint256 rBurn =  tFees.burn.mul(currentRate);
-        _standardTransferContent(sender, recipient, rAmount, rTransferAmount);
+        if (excludedFromFee == ExcludedFromFee.STANDARD) {
+            _standardTransferContent(sender, recipient, rAmount, rTransferAmount);    
+        } else if (excludedFromFee == ExcludedFromFee.TOEXCLUDED) {
+            //transfer To EXCLUDED account
+            _excludedFromTransferContent(sender, recipient, tTransferAmount, rAmount, rTransferAmount);
+        } else if (excludedFromFee == ExcludedFromFee.FROMEXCLUDED) {
+            //transfer from EXCLUDED account
+            _excludedToTransferContent(sender, recipient, tAmount, rAmount, rTransferAmount);
+        } else if (excludedFromFee == ExcludedFromFee.BOTHEXCLUDED) {
+            //transfer between both EXCLUDED accounts
+            _bothTransferContent(sender, recipient, tAmount, rAmount, tTransferAmount, rTransferAmount); 
+        }
         _sendToCharity(tFees.charity, sender);
+        if (isEventWheelActive)
+            _sendToEventWheel(tFees.eventWheel, sender);
         _takeLiquidity(tFees.liquidity);
         _reflectFee(rFee, rBurn, tFees);
         emit Transfer(sender, recipient, tTransferAmount);
     }
-    
+
     function _standardTransferContent(address sender, address recipient, uint256 rAmount, uint256 rTransferAmount) private {
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
     }
-    
-    function _transferToExcluded(address sender, address recipient, uint256 tAmount) private {
-        uint256 currentRate =  _getRate();
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, Fee memory tFees) = _getValues(tAmount);
-        uint256 rBurn =  tFees.burn.mul(currentRate);
-        _excludedFromTransferContent(sender, recipient, tTransferAmount, rAmount, rTransferAmount);        
-        _sendToCharity(tFees.charity, sender);
-        _takeLiquidity(tFees.liquidity);
-        _reflectFee(rFee, rBurn, tFees);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-    
+
     function _excludedFromTransferContent(address sender, address recipient, uint256 tTransferAmount, uint256 rAmount, uint256 rTransferAmount) private {
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);    
     }
-    
 
-    function _transferFromExcluded(address sender, address recipient, uint256 tAmount) private {
-        uint256 currentRate =  _getRate();
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, Fee memory tFees) = _getValues(tAmount);
-        uint256 rBurn =  tFees.burn.mul(currentRate);
-        _excludedToTransferContent(sender, recipient, tAmount, rAmount, rTransferAmount);
-        _sendToCharity(tFees.charity, sender);
-        _takeLiquidity(tFees.liquidity);
-        _reflectFee(rFee, rBurn, tFees);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-    
     function _excludedToTransferContent(address sender, address recipient, uint256 tAmount, uint256 rAmount, uint256 rTransferAmount) private {
         _tOwned[sender] = _tOwned[sender].sub(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);  
-    }
-
-    function _transferBothExcluded(address sender, address recipient, uint256 tAmount) private {
-        uint256 currentRate =  _getRate();
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, Fee memory tFees) = _getValues(tAmount);
-        uint256 rBurn =  tFees.burn.mul(currentRate);
-        _bothTransferContent(sender, recipient, tAmount, rAmount, tTransferAmount, rTransferAmount);  
-        _sendToCharity(tFees.charity, sender);
-        _takeLiquidity(tFees.liquidity);
-        _reflectFee(rFee, rBurn, tFees);
-        emit Transfer(sender, recipient, tTransferAmount);
     }
     
      function setNumTokensSellToAddToLiquidity(uint256 swapNumber) public onlyOwner {
@@ -1018,7 +1024,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
 
     function _reflectFee(uint256 rFee, uint256 rBurn, Fee memory tFees) private {
         _rTotal = _rTotal.sub(rFee).sub(rBurn);
-        _tFeeTotal = _tFeeTotal.add(tFees.retrib);
+        _tFeeRetrib = _tFeeRetrib.add(tFees.retrib);
         _tBurnTotal = _tBurnTotal.add(tFees.burn);
         _tCharityTotal = _tCharityTotal.add(tFees.charity);
         _tLiquidityTotal = _tLiquidityTotal.add(tFees.liquidity);
@@ -1042,11 +1048,12 @@ contract KIPSToken is Context, IBEP20, Ownable {
         tFees.charity = ((tAmount.mul(fees.charity)).div(_GRANULARITY)).div(100);
         tFees.burn = ((tAmount.mul(fees.burn)).div(_GRANULARITY)).div(100);
         tFees.liquidity = ((tAmount.mul(fees.liquidity)).div(_GRANULARITY)).div(100);
+        tFees.eventWheel = ((tAmount.mul(fees.eventWheel)).div(_GRANULARITY)).div(100);
         return (tFees);
     }
     
     function getTTransferAmount(uint256 tAmount, Fee memory tFees) private pure returns (uint256) {
-        return tAmount.sub(tFees.retrib).sub(tFees.burn).sub(tFees.charity).sub(tFees.liquidity);
+        return tAmount.sub(tFees.retrib).sub(tFees.burn).sub(tFees.charity).sub(tFees.liquidity).sub(tFees.eventWheel);
     }
     
     function _getRBasics(uint256 tAmount, uint256 tFee, uint256 currentRate) private pure returns (uint256, uint256) {
@@ -1059,7 +1066,8 @@ contract KIPSToken is Context, IBEP20, Ownable {
         uint256 rBurn = tFees.burn.mul(currentRate);
         uint256 rCharity = tFees.charity.mul(currentRate);
         uint256 rLiquidity = tFees.liquidity.mul(currentRate);
-        uint256 rTransferAmount = rAmount.sub(rFee + rBurn + rCharity + rLiquidity);
+        uint256 rEvenWheel = tFees.eventWheel.mul(currentRate);
+        uint256 rTransferAmount = rAmount.sub(rFee + rBurn + rCharity + rLiquidity + rEvenWheel);
         return rTransferAmount;
     }
 
@@ -1067,7 +1075,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
         (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
         return rSupply.div(tSupply);
     }
-
+    
     function _getCurrentSupply() private view returns(uint256, uint256) {
         uint256 rSupply = _rTotal;
         uint256 tSupply = _tTotal;      
@@ -1085,7 +1093,46 @@ contract KIPSToken is Context, IBEP20, Ownable {
         uint256 rCharity = tCharity.mul(currentRate);
         _rOwned[CharityAddress] = _rOwned[CharityAddress].add(rCharity);
         _tOwned[CharityAddress] = _tOwned[CharityAddress].add(tCharity);
+        
         emit Transfer(sender, CharityAddress, tCharity);
+    }
+    
+    function _sendToEventWheel(uint256 tEventWheel, address sender) private {
+        uint256 currentRate = _getRate();
+        uint256 rWheel = tEventWheel.mul(currentRate);
+        _rOwned[address(this)] = _rOwned[address(this)].add(rWheel);
+        if (_isExcluded[address(this)])
+            _tOwned[address(this)] = _tOwned[address(this)].add(tEventWheel);
+        _tOwnedWheel = _tOwnedWheel.add(tEventWheel);
+        // Activate wheel event
+        if (_tOwnedWheel >= _levelsAmount[_currentLevel]) {
+            rWheel = _levelsAmount[_currentLevel].mul(currentRate);
+            _tEventWheelTotal = _tEventWheelTotal.add(_levelsAmount[_currentLevel]);
+            if (_events[_currentLevel] == WheelEvent.BURN) {
+                // BURN
+                _burn(address(this), _levelsAmount[_currentLevel]);
+            } else if (_events[_currentLevel] == WheelEvent.RETRIBUTE) {
+                // RETRIBUTE
+                _rTotal = _rTotal.sub(rWheel);
+                _rOwned[address(this)] = _rOwned[address(this)].sub(rWheel, "Cannot substract from rOwned");
+                if (_isExcluded[address(this)])
+                 _tOwned[address(this)] = _tOwned[address(this)].sub(_levelsAmount[_currentLevel], "Cannot substract from tOwned");
+                 _tFeeRetrib = _tFeeRetrib.add(_levelsAmount[_currentLevel]);
+            } else if (_events[_currentLevel] == WheelEvent.CHARITY) {
+                // CHARITY
+                _sendToCharity(_levelsAmount[_currentLevel], address(this));
+                _rOwned[address(this)] = _rOwned[address(this)].sub(rWheel, "Cannot substract from rOwned");
+                if (_isExcluded[address(this)])
+                 _tOwned[address(this)] = _tOwned[address(this)].sub(_levelsAmount[_currentLevel], "Cannot substract from tOwned");
+            }
+            _tOwnedWheel = _tOwnedWheel.sub(_levelsAmount[_currentLevel], "Cannot sub from tOwnedwheel");
+            _currentLevel = _currentLevel.add(1);
+            if (_currentLevel == _levelsAmount.length) {
+                isEventWheelActive = false;
+                _fees.eventWheel = 0;
+            }
+        }
+        emit Transfer(sender, address(this), tEventWheel);
     }
     
     function _takeLiquidity(uint256 tLiquidity) private {
@@ -1095,19 +1142,9 @@ contract KIPSToken is Context, IBEP20, Ownable {
         if(_isExcluded[address(this)])
             _tOwned[address(this)] = _tOwned[address(this)].add(tLiquidity);
     }
-    
-    function _burn(address account, uint256 amount) private {
-        require(account != address(0), "TOKEN20: cannot burn from the zero address");
-        _rOwned[account] = _rOwned[account].sub(amount, "TOKEN20: cannot burn below zero");
-        _tOwned[account] = _tOwned[account].sub(amount, "TOKEN20: cannot burn below zero");
-        emit Burn(account, amount);
-        _tBurnTotal = _tBurnTotal.add(amount);
-        _tTotal = _tTotal.sub(amount);
-        _rTotal = _rTotal.sub(amount);
-    }
 
     function removeAllFee() private {
-        if(_fees.retrib == 0 && _fees.burn == 0 && _fees.charity == 0 && _fees.liquidity == 0) return;
+        if(_fees.retrib == 0 && _fees.burn == 0 && _fees.charity == 0 && _fees.liquidity == 0 && _fees.eventWheel == 0) return;
         
         origFees = _fees;
         
@@ -1115,6 +1152,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
         _fees.charity = 0;
         _fees.liquidity = 0;
         _fees.retrib = 0;
+        _fees.eventWheel = 0;
     }
     
     function restoreAllFee() private {
@@ -1123,6 +1161,18 @@ contract KIPSToken is Context, IBEP20, Ownable {
     
     function _getRetribFee() private view returns(uint256) {
         return _fees.retrib;
+    }
+    function _burn(address account, uint256 amount) private {
+        require(account != address(0), "TOKEN20: cannot burn from the zero address");
+        uint256 currentRate = _getRate();
+        uint256 rAmount = amount.mul(currentRate);
+        _rOwned[account] = _rOwned[account].sub(rAmount, "TOKEN20: cannot burn below zero");
+        if (_isExcluded[account])
+            _tOwned[account] = _tOwned[account].sub(amount, "TOKEN20: cannot burn below zero");
+        _tBurnTotal = _tBurnTotal.add(amount);
+        _tTotal = _tTotal.sub(amount, "Cannot substract from total");
+        _rTotal = _rTotal.sub(rAmount, "Cannot substract from rTotal");
+        emit Burn(account, amount);
     }
 
     function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
@@ -1134,7 +1184,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
         // this is so that we can capture exactly the amount of ETH that the
         // swap creates, and not make the liquidity event include any ETH that
         // has been manually sent to the contract
-        uint256 initialBalance = address(this).balance;
+        uint256 initialBalance = address(this).balance.sub(_tOwnedWheel);
 
         // swap tokens for ETH
         swapTokensForEth(half); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
@@ -1165,7 +1215,7 @@ contract KIPSToken is Context, IBEP20, Ownable {
             block.timestamp
         );
     }
-
+    
     function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
         // approve token transfer to cover all possible scenarios
         _approve(address(this), address(uniswapV2Router), tokenAmount);
@@ -1187,15 +1237,20 @@ contract KIPSToken is Context, IBEP20, Ownable {
             removeAllFee();
         
         if (_isExcluded[sender] && !_isExcluded[recipient]) {
-            _transferFromExcluded(sender, recipient, amount);
+            // FROM EXCLUDED
+            _transferAction(sender, recipient, amount, ExcludedFromFee.FROMEXCLUDED);
         } else if (!_isExcluded[sender] && _isExcluded[recipient]) {
-            _transferToExcluded(sender, recipient, amount);
+            // TO EXCLUDED
+            _transferAction(sender, recipient, amount, ExcludedFromFee.TOEXCLUDED);
         } else if (!_isExcluded[sender] && !_isExcluded[recipient]) {
-            _transferStandard(sender, recipient, amount);
+            // STANDARD
+            _transferAction(sender, recipient, amount, ExcludedFromFee.STANDARD);
         } else if (_isExcluded[sender] && _isExcluded[recipient]) {
-            _transferBothExcluded(sender, recipient, amount);
+            // BOTH
+            _transferAction(sender, recipient, amount, ExcludedFromFee.BOTHEXCLUDED);
         } else {
-            _transferStandard(sender, recipient, amount);
+            // STANDARD
+            _transferAction(sender, recipient, amount, ExcludedFromFee.STANDARD);
         }
         
         if(!takeFee)
